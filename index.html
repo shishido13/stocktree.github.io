@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Financial Forest 3D Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: "Helvetica Neue", Arial, sans-serif;
+            background-color: #111;
+            color: #eee;
+            display: flex;
+            height: 100vh;
+        }
+
+        /* 左側の3Dキャンバスエリア */
+        #canvas-container {
+            flex-grow: 1; /* 残りの幅をすべて使う */
+            position: relative;
+            outline: none;
+        }
+
+        /* 右側の情報パネル */
+        #info-panel {
+            width: 320px;
+            background-color: #1e1e1e;
+            border-left: 1px solid #333;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.5);
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #444;
+            padding-bottom: 0.5rem;
+            color: #4db8ff;
+        }
+
+        .placeholder {
+            color: #888;
+            font-style: italic;
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        /* 財務データ表示用スタイル */
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        .metric-label {
+            color: #aaa;
+        }
+        .metric-value {
+            font-weight: bold;
+            font-family: 'Courier New', monospace;
+        }
+
+        /* バリュースコアのバッジ */
+        .badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            text-align: center;
+            margin-top: 10px;
+            margin-bottom: 20px;
+            color: #fff;
+        }
+        
+        .legend {
+            margin-top: auto;
+            padding-top: 20px;
+            border-top: 1px solid #333;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        .legend-item {
+            margin-bottom: 5px;
+        }
+    </style>
+
+    <!-- Import map for Three.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <!-- 3D描画領域 -->
+    <div id="canvas-container"></div>
+
+    <!-- 情報パネル -->
+    <div id="info-panel">
+        <h1>銘柄詳細</h1>
+        <div id="stock-details">
+            <div class="placeholder">
+                <p>森の中から木（銘柄）をクリックして詳細を確認してください。</p>
+                <p>ドラッグで回転、ホイールでズームできます。</p>
+            </div>
+        </div>
+        
+        <div class="legend">
+            <strong>ビジュアル凡例:</strong>
+            <div class="legend-item">🌲 高さ: 時価総額 (大)</div>
+            <div class="legend-item">🪵 幹の太さ: 自己資本比率 (高)</div>
+            <div class="legend-item">🍃 葉の量: 利益率 (高)</div>
+            <div class="legend-item">🎨 葉の色: 青=割安 / 赤=割高</div>
+            <div class="legend-item">🍋 果実: 配当利回り (多)</div>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // ---------------------------------------------------------
+        // 1. データ生成セクション
+        // ---------------------------------------------------------
+
+        // 20銘柄分のダミーデータを生成する関数
+        function generateDummyStocks(count) {
+            const stocks = [];
+            const sectors = ["Tech", "Auto", "Bank", "Food", "Chem", "Retail"];
+            
+            for (let i = 0; i < count; i++) {
+                // ランダムな財務数値を生成
+                const marketCap = Math.floor(Math.random() * 20000) + 500; // 500 ~ 20500 億円
+                const equityRatio = 0.1 + Math.random() * 0.8; // 10% ~ 90%
+                const roe = -0.05 + Math.random() * 0.25; // -5% ~ 20%
+                const operatingMargin = 0.01 + Math.random() * 0.3; // 1% ~ 31%
+                
+                // PER/PBRは相関を持たせずランダムに振る（バリュー判定のため）
+                const pbr = 0.3 + Math.random() * 4.0; // 0.3 ~ 4.3倍
+                // PERは異常値を避けるため簡易計算
+                const per = (Math.random() * 40) + 5; // 5 ~ 45倍
+
+                const dividendYield = Math.random() < 0.2 ? 0 : (Math.random() * 0.06); // 20%は無配、他は0~6%
+                const fcfMargin = operatingMargin * (0.5 + Math.random() * 0.5); // 営業利益に近い動き
+
+                // バリュースコア計算 (要件に基づく)
+                // pbrScore: PBR 1.5以下ならスコアが高くなる
+                const pbrScore = Math.max(0, Math.min(1, 1.5 - pbr)); 
+                // perScore: PER 20以下ならスコアが高くなる
+                const perScore = Math.max(0, Math.min(1, (20 - per) / 20));
+                
+                // 総合バリュースコア (0: 割高/グロース, 1: 超割安)
+                let valueScore = 0.6 * pbrScore + 0.4 * (per < 0 ? 0 : (20 - Math.max(0, per)) / 20);
+                // 簡易補正（負のPERなどは除外してスコア化）
+                if(per < 0) valueScore = 0; 
+                else {
+                    const rawPerScore = Math.max(0, Math.min(1, (25 - per) / 25));
+                    const rawPbrScore = Math.max(0, Math.min(1, (2.0 - pbr) / 2.0));
+                    valueScore = (rawPerScore + rawPbrScore) / 2;
+                }
+
+                stocks.push({
+                    ticker: `${sectors[i % sectors.length].substring(0,1)}${1000 + i}`,
+                    name: `${sectors[i % sectors.length]} Corp ${i+1}`,
+                    marketCap,
+                    equityRatio,
+                    roe,
+                    operatingMargin,
+                    pbr,
+                    per,
+                    dividendYield,
+                    fcfMargin,
+                    valueScore // 計算済みスコアを持たせる
+                });
+            }
+            return stocks;
+        }
+
+        const stocks = generateDummyStocks(20);
+
+        // データの最大値・最小値を計算（正規化用）
+        const maxCap = Math.max(...stocks.map(s => s.marketCap));
+        const minCap = Math.min(...stocks.map(s => s.marketCap));
+        
+        // ---------------------------------------------------------
+        // 2. Three.js セットアップ
+        // ---------------------------------------------------------
+        
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x222222); // ダークグレーの背景
+        scene.fog = new THREE.Fog(0x222222, 20, 80);  // 遠くをぼかす
+
+        const camera = new THREE.PerspectiveCamera(45, container.clientWidth / container.clientHeight, 0.1, 1000);
+        camera.position.set(0, 20, 40);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(container.clientWidth, container.clientHeight);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // ライティング
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.4);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // 地面（グリッド）
+        const gridHelper = new THREE.GridHelper(100, 50, 0x444444, 0x333333);
+        scene.add(gridHelper);
+
+        // ---------------------------------------------------------
+        // 3. 木（銘柄）の作成ロジック
+        // ---------------------------------------------------------
+
+        const treeGroup = new THREE.Group();
+        scene.add(treeGroup);
+
+        // 色の計算用ヘルパー
+        // 赤(割高) -> 黄(中立) -> 青緑(割安)
+        const colorExpensive = new THREE.Color(0xff4d4d); // Red/Orange
+        const colorFair = new THREE.Color(0xffd633);      // Yellow
+        const colorCheap = new THREE.Color(0x00cc99);     // Teal/Green
+
+        function getFoliageColor(score) {
+            const color = new THREE.Color();
+            if (score < 0.5) {
+                // 0.0(Exp) -> 0.5(Fair)
+                const t = score / 0.5;
+                color.lerpColors(colorExpensive, colorFair, t);
+            } else {
+                // 0.5(Fair) -> 1.0(Cheap)
+                const t = (score - 0.5) / 0.5;
+                color.lerpColors(colorFair, colorCheap, t);
+            }
+            return color;
+        }
+
+        // 各銘柄をループして配置
+        const cols = 5; // 5列で折り返し
+        const spacing = 8; // 木の間隔
+
+        stocks.forEach((stock, index) => {
+            // === データの正規化 ===
+            // 高さ: MarketCap (最小2, 最大12くらいの範囲に収める)
+            const heightScale = 2 + ((stock.marketCap - minCap) / (maxCap - minCap)) * 10;
+            
+            // 太さ: EquityRatio (0.1~1.0 -> 半径 0.2~0.8)
+            const radiusScale = 0.2 + stock.equityRatio * 0.6;
+
+            // 葉の大きさ: OperatingMargin (大きいほど葉が茂る)
+            // マイナスの場合は小さくする
+            const foliageScale = Math.max(0.8, 1.0 + stock.operatingMargin * 4);
+
+            // === 3Dオブジェクト作成 ===
+            const stockObj = new THREE.Group();
+
+            // 1. 幹 (Cylinder)
+            const trunkGeo = new THREE.CylinderGeometry(radiusScale * 0.7, radiusScale, heightScale, 12);
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.y = heightScale / 2; // 地面に底面がつくように
+            trunk.castShadow = true;
+            stockObj.add(trunk);
+
+            // 2. 冠 / 葉 (Icosahedron or Dodecahedron for low poly look)
+            const foliageGeo = new THREE.DodecahedronGeometry(1);
+            const foliageColor = getFoliageColor(stock.valueScore);
+            const foliageMat = new THREE.MeshStandardMaterial({ 
+                color: foliageColor,
+                flatShading: true 
+            });
+            
+            // 葉を複数重ねてボリューム感を出す
+            const foliageCount = 3;
+            for(let j=0; j<foliageCount; j++) {
+                const leaf = new THREE.Mesh(foliageGeo, foliageMat);
+                // 幹の上に配置。少しランダムに散らす
+                const yBase = heightScale;
+                leaf.position.set(
+                    (Math.random() - 0.5) * radiusScale * 2,
+                    yBase + (Math.random() * 1.5),
+                    (Math.random() - 0.5) * radiusScale * 2
+                );
+                const s = foliageScale * (0.8 + Math.random() * 0.4);
+                leaf.scale.set(s, s, s);
+                leaf.castShadow = true;
+                stockObj.add(leaf);
+
+                // 3. フルーツ (Dividend Yield)
+                // 配当利回りに応じてフルーツを追加
+                // yield 3% -> 3個くらい, 5% -> 5個くらい
+                const fruitCount = Math.floor(stock.dividendYield * 100); 
+                if (fruitCount > 0 && j === 0) { // 最初の葉の塊の周辺に生成
+                    const fruitGeo = new THREE.SphereGeometry(0.2, 8, 8);
+                    const fruitMat = new THREE.MeshStandardMaterial({ 
+                        color: 0xffaa00, 
+                        emissive: 0xff4400,
+                        emissiveIntensity: 0.2
+                    });
+                    
+                    for(let f=0; f<fruitCount; f++) {
+                        const fruit = new THREE.Mesh(fruitGeo, fruitMat);
+                        // 葉の中心から少し離れた表面付近に配置
+                        const theta = Math.random() * Math.PI * 2;
+                        const phi = Math.random() * Math.PI;
+                        const r = s * 0.9; // 葉の半径より少し内側か表面
+                        fruit.position.set(
+                            leaf.position.x + r * Math.sin(phi) * Math.cos(theta),
+                            leaf.position.y + r * Math.sin(phi) * Math.sin(theta),
+                            leaf.position.z + r * Math.cos(phi)
+                        );
+                        stockObj.add(fruit);
+                    }
+                }
+            }
+
+            // 配置 (格子状)
+            const row = Math.floor(index / cols);
+            const col = index % cols;
+            // 中心を原点にするためのオフセット
+            const offsetX = (cols * spacing) / 2;
+            const offsetZ = (Math.ceil(stocks.length / cols) * spacing) / 2;
+
+            stockObj.position.set(
+                col * spacing - offsetX + (spacing/2),
+                0,
+                row * spacing - offsetZ + (spacing/2)
+            );
+
+            // ユーザーデータとして銘柄情報を埋め込む
+            stockObj.userData = { isStock: true, data: stock, originalScale: 1.0 };
+            
+            treeGroup.add(stockObj);
+        });
+
+        // ---------------------------------------------------------
+        // 4. インタラクション (Raycaster)
+        // ---------------------------------------------------------
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let selectedObject = null;
+
+        // マウスイベント
+        renderer.domElement.addEventListener('pointerdown', onPointerDown);
+
+        function onPointerDown(event) {
+            // キャンバス内の座標に変換
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+
+            // 交差判定（再帰的に子要素もチェック）
+            const intersects = raycaster.intersectObjects(treeGroup.children, true);
+
+            if (intersects.length > 0) {
+                // クリックしたメッシュの親グループ（Stock Object）を探す
+                let target = intersects[0].object;
+                while(target.parent && target.parent !== treeGroup) {
+                    target = target.parent;
+                }
+
+                if (target.userData.isStock) {
+                    selectStock(target);
+                }
+            } else {
+                deselectStock();
+            }
+        }
+
+        function selectStock(object) {
+            // 前の選択を解除
+            if (selectedObject && selectedObject !== object) {
+                selectedObject.scale.setScalar(1);
+                // エミッシブ（発光）を戻すなどの処理があればここ
+            }
+
+            selectedObject = object;
+            
+            // 選択アニメーション（少し大きくする）
+            object.scale.setScalar(1.2);
+
+            // UI更新
+            updateInfoPanel(object.userData.data);
+        }
+
+        function deselectStock() {
+            if (selectedObject) {
+                selectedObject.scale.setScalar(1);
+                selectedObject = null;
+            }
+            // UIリセット
+            document.getElementById('stock-details').innerHTML = `
+                <div class="placeholder">
+                    <p>森の中から木（銘柄）をクリックして詳細を確認してください。</p>
+                </div>
+            `;
+        }
+
+        function updateInfoPanel(data) {
+            const detailsDiv = document.getElementById('stock-details');
+            
+            // 数値フォーマット
+            const fmtYen = (v) => v.toLocaleString();
+            const fmtPct = (v) => (v * 100).toFixed(1) + '%';
+            const fmtX = (v) => v.toFixed(2) + 'x';
+
+            // バリュースコア判定テキストと色
+            let scoreText = "フェアバリュー";
+            let badgeColor = "#e6b800"; // yellow
+            if (data.valueScore > 0.66) {
+                scoreText = "ディープバリュー (割安)";
+                badgeColor = "#00cc99"; // green
+            } else if (data.valueScore < 0.33) {
+                scoreText = "グロース / 割高";
+                badgeColor = "#ff4d4d"; // red
+            }
+
+            const html = `
+                <div style="margin-bottom:15px;">
+                    <h2 style="margin:0; color:#fff;">${data.ticker}</h2>
+                    <div style="color:#ccc; font-size:0.9rem;">${data.name}</div>
+                </div>
+
+                <div class="badge" style="background-color: ${badgeColor};">
+                    ${scoreText} (Score: ${data.valueScore.toFixed(2)})
+                </div>
+
+                <div class="metric-row">
+                    <span class="metric-label">時価総額 (高さ)</span>
+                    <span class="metric-value">${fmtYen(data.marketCap)} 億円</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">自己資本比率 (太さ)</span>
+                    <span class="metric-value">${fmtPct(data.equityRatio)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">営業利益率 (葉量)</span>
+                    <span class="metric-value">${fmtPct(data.operatingMargin)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">FCFマージン</span>
+                    <span class="metric-value">${fmtPct(data.fcfMargin)}</span>
+                </div>
+                <hr style="border-color:#444;">
+                <div class="metric-row">
+                    <span class="metric-label">PER</span>
+                    <span class="metric-value">${fmtX(data.per)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">PBR</span>
+                    <span class="metric-value">${fmtX(data.pbr)}</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">ROE</span>
+                    <span class="metric-value">${fmtPct(data.roe)}</span>
+                </div>
+                <div class="metric-row" style="color:${data.dividendYield > 0.03 ? '#ffaa00' : 'inherit'}">
+                    <span class="metric-label">配当利回り (果実)</span>
+                    <span class="metric-value">${fmtPct(data.dividendYield)}</span>
+                </div>
+            `;
+            detailsDiv.innerHTML = html;
+        }
+
+        // ---------------------------------------------------------
+        // 5. アニメーションループ
+        // ---------------------------------------------------------
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            
+            // 選択中の木を少し回転させる演出
+            if (selectedObject) {
+                selectedObject.rotation.y += 0.01;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // ウィンドウリサイズ対応
+        window.addEventListener('resize', () => {
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+            renderer.setSize(width, height);
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+        });
+
+        animate();
+
+    </script>
+</body>
+</html>
